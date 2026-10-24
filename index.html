@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Workout Log</title>
+  <meta name="theme-color" content="#0b0d10">
+  <meta name="color-scheme" content="dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Workouts">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="view" aria-live="polite"></main>
+  <nav id="tabs" aria-label="Main">
+    <button data-tab="today" type="button"><span class="ico">&#127947;&#65039;</span><span>Today</span></button>
+    <button data-tab="progress" type="button"><span class="ico">&#128200;</span><span>Progress</span></button>
+    <button data-tab="settings" type="button"><span class="ico">&#9881;&#65039;</span><span>Settings</span></button>
+  </nav>
+  <div id="toast" role="status"></div>
+  <noscript>This app needs JavaScript.</noscript>
+  <script src="plan.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
