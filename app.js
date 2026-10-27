@@ -14,11 +14,11 @@
    * Normally leave this empty: paste the Apps Script web-app URL once in Settings (stored in
    * localStorage). If you ever want it baked in, put the URL here instead. */
   var DEFAULT_SCRIPT_URL = '';
-  var APP_VERSION = '1.0.0';
+  var APP_VERSION = '1.1.0';
   var UNIT = 'lb';
   var URL_PATTERN = /^https:\/\/script\.google\.com\/.+\/exec$/;
 
-  var K = { settings: 'wl.settings', hist: 'wl.history', queue: 'wl.queue', draft: 'wl.draft', checks: 'wl.checks', failed: 'wl.failed' };
+  var K = { settings: 'wl.settings', hist: 'wl.history', queue: 'wl.queue', draft: 'wl.draft', checks: 'wl.checks', failed: 'wl.failed', mini: 'wl.mini' };
   var PLAN = window.PLAN;
   var DAYNAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -63,10 +63,10 @@
   function num(v) { if (v === '' || v == null) return ''; var n = parseFloat(String(v).replace(',', '.')); return isFinite(n) ? n : ''; }
   function prettyDate(s) { var d = parseDate(s); return DAYNAMES[d.getDay()] + ' ' + (d.getMonth() + 1) + '/' + d.getDate(); }
   var toastTimer;
-  function toast(msg) {
+  function toast(msg, ms) {
     var t = $('#toast'); if (!t) return;
     t.textContent = msg; t.classList.add('show');
-    clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2200);
+    clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.classList.remove('show'); }, ms || 2200);
   }
 
   /* ---- state + storage ---------------------------------------------------------------- */
@@ -127,6 +127,169 @@
       if (!best || s.w > best.w || (s.w === best.w && (s.r || 0) > (best.r || 0))) best = { w: s.w, r: s.r };
     });
     return best;
+  }
+
+  /* ---- motivation logic (pure functions over history; nothing here touches the sheet) ------------
+   * Design (from the motivation research: self-monitoring, process goals, neutral lapse handling):
+   *  - A "session" is a date with at least one lifting entry saved (Bodyweight and the timed finisher
+   *    don't count) OR a date where the 15-minute version was tapped (stored in wl.mini, local only).
+   *  - The weekly goal is 5 sessions (Mon-Fri plan). A week "counts" for the streak at 4 of 5, so a single
+   *    skipped day never breaks it. Weekend sessions still count toward the week's total.
+   *  - Missed days are shown neutrally (no red, no "you missed"). */
+  var GOAL = 5, STREAK_MIN = 4, WEIGHT_STEP = 2.5, MINI_NOTE = '15-min version';
+
+  function addDays(s, n) { var d = parseDate(s); d.setDate(d.getDate() + n); return dateStr(d); }
+  /* Monday of the week containing s (Sunday belongs to the week that started the Monday before). */
+  function weekStart(s) { var d = dowOf(s); return addDays(s, d === 0 ? -6 : 1 - d); }
+  function isMiniNote(n) { return /^15-min version/.test(n || ''); }
+  function hasData(e) { return (e.sets || []).some(function (s) { return (s.w !== '' && s.w != null) || (s.r !== '' && s.r != null); }); }
+  function isLiftEntry(name, e) { return name !== 'Bodyweight' && e.minutes == null && hasData(e); }
+  function miniMarks() { return LS.get(K.mini, {}); }
+
+  /* date -> { full: n lifting entries, mini: n entries noted "15-min version", tapped: bool } */
+  function sessionMap() {
+    var hist = history(), map = {};
+    Object.keys(hist).forEach(function (name) {
+      (hist[name] || []).forEach(function (e) {
+        if (!isLiftEntry(name, e)) return;
+        var m = map[e.date] || (map[e.date] = { full: 0, mini: 0, tapped: false });
+        if (isMiniNote(e.notes)) m.mini++; else m.full++;
+      });
+    });
+    var marks = miniMarks();
+    Object.keys(marks).forEach(function (d) { var m = map[d] || (map[d] = { full: 0, mini: 0, tapped: false }); m.tapped = true; });
+    return map;
+  }
+  function kindOf(m) { return m && m.full ? 'full' : 'mini'; }
+
+  /* Mon-Fri dots + session count for the week containing `date`. */
+  function weekInfo(date) {
+    var start = weekStart(date), map = sessionMap(), today = dateStr(), days = [], count = 0, i, d, m;
+    var names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    for (i = 0; i < 7; i++) {
+      d = addDays(start, i); m = map[d];
+      if (m) count++;
+      if (i < 5) days.push({ date: d, name: names[i], label: names[i].charAt(0), isToday: d === today,
+        status: m ? 'done' : d === today ? 'today' : d > today ? 'upcoming' : 'missed', kind: m ? kindOf(m) : '' });
+    }
+    return { start: start, days: days, count: count, goal: GOAL };
+  }
+
+  /* Weekly streak: consecutive weeks with >= STREAK_MIN sessions, ending at the week of refDate.
+   * The week in progress never breaks the streak (it just isn't counted until it reaches 4). */
+  function streakInfo(refDate) {
+    var map = sessionMap(), c = {}, w, n = 0, best = 0, run = 0, prev = null;
+    Object.keys(map).forEach(function (d) { var k = weekStart(d); c[k] = (c[k] || 0) + 1; });
+    w = weekStart(refDate);
+    if ((c[w] || 0) < STREAK_MIN && w >= weekStart(dateStr())) w = addDays(w, -7);
+    while ((c[w] || 0) >= STREAK_MIN) { n++; w = addDays(w, -7); }
+    Object.keys(c).sort().forEach(function (k) {
+      if (c[k] >= STREAK_MIN) { run = prev && addDays(prev, 7) === k ? run + 1 : 1; prev = k; if (run > best) best = run; }
+      else { run = 0; prev = null; }
+    });
+    return { weeks: n, best: Math.max(best, n) };
+  }
+
+  /* "Beat last time" target. Deliberately simple:
+   *   - base = last session's top set (heaviest weight, then most reps), e.g. 90 x 10
+   *   - if the last TWO sessions both hit the planned reps on every planned set -> same reps, smallest
+   *     weight step (+2.5): 92.5 x <planned reps>
+   *   - otherwise -> same weight, +1 rep on the top set: 90 x 11
+   * "Hit" = at least the planned number of sets, each with at least the planned reps. Returns null with no history. */
+  function hitAll(e, tSets, tReps) {
+    var sets = e && e.sets || [];
+    return sets.length >= tSets && sets.every(function (s) { return s.r !== '' && s.r != null && s.r >= tReps; });
+  }
+  function suggestTarget(name, tSets, tReps, date) {
+    var last = lastBefore(name, date); if (!last) return null;
+    var top = topSet(last); if (!top || top.r === '' || top.r == null) return null;
+    var prev = lastBefore(name, last.date);
+    if (hitAll(last, tSets, tReps) && prev && hitAll(prev, tSets, tReps)) {
+      return { last: top, w: Math.round((top.w + WEIGHT_STEP) * 100) / 100, r: tReps, kind: 'weight', lastDate: last.date };
+    }
+    return { last: top, w: top.w, r: top.r + 1, kind: 'rep', lastDate: last.date };
+  }
+
+  /* PR check for one exercise entry against every OTHER date in history (so editing a day never PRs itself).
+   * PR = a set heavier than the previous best weight, or more reps than ever done at that same weight.
+   * The very first time an exercise is logged is a baseline, not a PR. Weight PRs win over rep PRs. */
+  function prFor(name, entry) {
+    if (!isLiftEntry(name, entry)) return null;
+    var best = null, repsAt = {};
+    (history()[name] || []).forEach(function (e) {
+      if (e.date === entry.date || e.minutes != null) return;
+      (e.sets || []).forEach(function (s) {
+        if (s.w === '' || s.w == null) return;
+        if (best === null || s.w > best) best = s.w;
+        var r = s.r === '' || s.r == null ? 0 : s.r;
+        if (repsAt[s.w] == null || r > repsAt[s.w]) repsAt[s.w] = r;
+      });
+    });
+    if (best === null) return null;
+    var wPr = null, rPr = null;
+    (entry.sets || []).forEach(function (s) {
+      if (s.w === '' || s.w == null) return;
+      var r = s.r === '' || s.r == null ? 0 : s.r;
+      if (s.w > best) { if (!wPr || s.w > wPr.w || (s.w === wPr.w && r > wPr.r)) wPr = { type: 'weight', w: s.w, r: r }; }
+      else if (repsAt[s.w] != null && r > repsAt[s.w]) { if (!rPr || s.w > rPr.w || (s.w === rPr.w && r > rPr.r)) rPr = { type: 'reps', w: s.w, r: r }; }
+    });
+    return wPr || rPr;
+  }
+  function prText(name, pr) { return name + ' ' + fmt(pr.w) + ' × ' + fmt(pr.r) + (pr.type === 'weight' ? ' (heaviest yet)' : ' (most reps at ' + fmt(pr.w) + ')'); }
+
+  /* The 15-minute version: the day's two main compound lifts, 2 hard sets each (reps/per from the plan). */
+  function miniLifts(day) {
+    if (!day) return [];
+    var picks = (day.mini || []).map(function (n) { return day.lifts.filter(function (l) { return l[0] === n; })[0]; }).filter(Boolean);
+    if (picks.length < 2) picks = day.lifts.slice(0, 2);
+    return picks.map(function (l) { return [l[0], 2, l[2], l[3] || '']; });
+  }
+  function miniOn(date, dow) { var m = miniMarks()[date]; return !!(m && m.dow === dow); }
+  function setMini(date, dow, on) {
+    var marks = miniMarks();
+    if (on) marks[date] = { dow: dow, ts: isoLocal() }; else delete marks[date];
+    var keep = Object.keys(marks).sort().slice(-120), pruned = {}; keep.forEach(function (k) { pruned[k] = marks[k]; });
+    LS.set(K.mini, pruned);
+  }
+  function viewLifts(day, mini) { return !day ? [] : mini ? miniLifts(day) : day.lifts; }
+  function allSaved(lifts, date) { return lifts.length > 0 && lifts.every(function (l) { return !!entryOn(l[0], date); }); }
+
+  /* Everything the post-session summary shows, for one date. */
+  function liftEntries(date, label) {
+    var hist = history(), out = [];
+    Object.keys(hist).forEach(function (name) {
+      (hist[name] || []).forEach(function (e) { if (e.date === date && isLiftEntry(name, e) && (!label || e.day === label)) out.push({ name: name, entry: e }); });
+    });
+    return out;
+  }
+  function tally(items) {
+    var sets = 0, vol = 0;
+    items.forEach(function (it) { it.entry.sets.forEach(function (s) {
+      if ((s.w !== '' && s.w != null) || (s.r !== '' && s.r != null)) sets++;
+      if (typeof s.w === 'number' && typeof s.r === 'number') vol += s.w * s.r;
+    }); });
+    return { sets: sets, volume: Math.round(vol) };
+  }
+  function nextFocus(date) {
+    var t = addDays(date, 1), day = dayForDow(dowOf(t));
+    if (day) return { tomorrow: true, title: day.title, label: day.label, lifts: day.lifts.slice(0, 3).map(function (l) { return l[0]; }) };
+    for (var i = 2; i < 9; i++) { var d2 = dayForDow(dowOf(addDays(date, i))); if (d2) return { tomorrow: false, title: d2.title, label: d2.label, lifts: d2.lifts.slice(0, 3).map(function (l) { return l[0]; }) }; }
+    return null;
+  }
+  function summaryData(date, dow) {
+    var label = dayLabel(dow, date), items = liftEntries(date), map = sessionMap(), kind = kindOf(map[date]);
+    var cur = tally(items), prs = [];
+    items.forEach(function (it) { var p = prFor(it.name, it.entry); if (p) prs.push({ name: it.name, pr: p, text: prText(it.name, p) }); });
+    /* compare with the latest earlier session of the same plan day AND same kind (full vs 15-min) */
+    var dates = {};
+    var hist = history();
+    Object.keys(hist).forEach(function (name) { (hist[name] || []).forEach(function (e) {
+      if (e.date < date && e.day === label && isLiftEntry(name, e) && kindOf(map[e.date]) === kind) dates[e.date] = true;
+    }); });
+    var prevDate = Object.keys(dates).sort().pop() || null, prev = null;
+    if (prevDate) { prev = tally(liftEntries(prevDate, label)); prev.date = prevDate; }
+    return { date: date, label: label, kind: kind, sets: cur.sets, volume: cur.volume, prs: prs, prev: prev,
+      lifts: items.length, focus: nextFocus(date), week: weekInfo(date), streak: streakInfo(date) };
   }
 
   /* ---- sync ------------------------------------------------------------------------------ */
@@ -245,8 +408,81 @@
       h('p', { text: g.how }), h('p', { class: 'tip', text: 'Tip: ' + g.tip }));
   }
 
+  /* ---- UI: motivation pieces ---------------------------------------------------------------- */
+  function ringSVG(count, goal) {
+    var R = 24, C = 2 * Math.PI * R, frac = Math.min(1, count / goal);
+    var s = svg('svg', { viewBox: '0 0 60 60', class: 'ring', role: 'img', 'aria-label': count + ' of ' + goal + ' sessions' });
+    s.appendChild(svg('circle', { class: 'ring-bg', cx: 30, cy: 30, r: R }));
+    s.appendChild(svg('circle', { class: 'ring-fg' + (count >= goal ? ' full' : ''), cx: 30, cy: 30, r: R, 'stroke-dasharray': (frac * C).toFixed(1) + ' ' + C.toFixed(1), transform: 'rotate(-90 30 30)' }));
+    s.appendChild(svg('text', { class: 'ring-n', x: 30, y: 35, 'text-anchor': 'middle' }, String(count)));
+    return s;
+  }
+  function dotsRow(info) {
+    var row = h('div', { class: 'dots' });
+    info.days.forEach(function (d) {
+      var word = d.status === 'done' ? (d.kind === 'mini' ? '15-min session' : 'session done') : d.status === 'today' ? 'today' : d.status === 'upcoming' ? 'coming up' : 'no session';
+      row.appendChild(h('div', { class: 'dotwrap' },
+        h('span', { class: 'dotd ' + d.status + (d.kind === 'mini' ? ' mini' : '') + (d.isToday ? ' now' : ''), role: 'img', 'aria-label': d.name + ': ' + word, title: d.name + ': ' + word }),
+        h('span', { class: 'dotl' + (d.isToday ? ' now' : ''), text: d.label })));
+    });
+    return row;
+  }
+  function streakText(st) {
+    if (!st.weeks && !st.best) return 'Weekly streak starts when a week reaches ' + STREAK_MIN + ' sessions';
+    return 'Weekly streak: ' + st.weeks + ' week' + (st.weeks === 1 ? '' : 's') + ' · best ' + st.best + '  (a week counts at ' + STREAK_MIN + ' of ' + GOAL + ')';
+  }
+  function weekCard(date) {
+    var info = weekInfo(date), st = streakInfo(date), thisWeek = info.start === weekStart(dateStr());
+    return h('section', { class: 'card weekcard', 'data-week': info.start },
+      h('div', { class: 'row' }, ringSVG(info.count, info.goal),
+        h('div', { class: 'grow' },
+          h('div', { class: 'wk-title', text: thisWeek ? 'This week' : 'Week of ' + prettyDate(info.start).split(' ')[1] }),
+          h('div', { class: 'wk-count' }, h('b', { text: String(info.count) }), ' of ' + info.goal + ' sessions' + (info.count >= info.goal ? ' · goal met' : '')),
+          dotsRow(info))),
+      h('div', { class: 'streak', text: streakText(st) }));
+  }
+  function refreshWeek(date) { var wc = $('.weekcard'); if (wc) wc.replaceWith(weekCard(date)); }
+
+  function closeSummary() { var o = $('#summary'); if (o) o.remove(); }
+  function showSummary(date, dow) {
+    closeSummary();
+    var tt = $('#toast'); if (tt) tt.classList.remove('show');   /* the summary already says it all */
+    var d = summaryData(date, dow), mini = d.kind === 'mini';
+    var vsText = '';
+    if (mini) vsText = 'Short version: volume isn’t compared with full sessions.';
+    else if (d.prev) {
+      var diff = d.volume - d.prev.volume, pct = d.prev.volume ? Math.round(diff / d.prev.volume * 100) : 0;
+      vsText = 'Last ' + prettyDate(d.prev.date) + ': ' + d.prev.volume.toLocaleString('en-US') + ' ' + UNIT + (d.prev.volume ? ' (' + (pct > 0 ? '+' : '') + pct + '% today)' : '');
+    } else vsText = 'First ' + d.label + ' session logged, a baseline to beat.';
+    var line = mini ? 'The short version counts as a full session. Showing up is the habit.'
+      : d.prs.length ? 'New personal best today. That’s the progress showing up.' : 'Solid, steady work. That’s how it adds up.';
+    var sheet = h('div', { class: 'sheet' },
+      h('div', { class: 'sum-emoji', 'aria-hidden': 'true', text: d.prs.length ? '🏆' : '✅' }),
+      h('h1', { class: 'sum-title', text: mini ? '15-minute version done' : 'Workout done' }),
+      h('p', { class: 'sub', text: line }),
+      h('div', { class: 'stats' },
+        h('div', { class: 'stat' }, h('b', { text: String(d.sets) }), h('span', { text: 'Sets' })),
+        h('div', { class: 'stat' }, h('b', { text: d.volume.toLocaleString('en-US') }), h('span', { text: 'Volume ' + UNIT })),
+        h('div', { class: 'stat' }, h('b', { text: String(d.prs.length) }), h('span', { text: d.prs.length === 1 ? 'PR' : 'PRs' }))),
+      h('p', { class: 'small muted sum-vs', text: vsText }),
+      d.prs.length ? h('ul', { class: 'prlist' }, d.prs.map(function (p) { return h('li', { text: '🏆 ' + p.text }); })) : null,
+      h('div', { class: 'sum-week' }, h('div', { class: 'row' }, ringSVG(d.week.count, d.week.goal),
+        h('div', { class: 'grow' }, h('div', { class: 'wk-count' }, h('b', { text: String(d.week.count) }), ' of ' + d.week.goal + ' sessions this week'), dotsRow(d.week))),
+        h('div', { class: 'streak', text: streakText(d.streak) })),
+      d.focus ? h('div', { class: 'sum-next' }, h('div', { class: 'small muted', text: d.focus.tomorrow ? 'Tomorrow’s focus' : 'Tomorrow is a rest day. Next up' }),
+        h('div', { class: 'name', text: d.focus.label + ' · ' + d.focus.title }),
+        h('div', { class: 'small muted', text: d.focus.lifts.join(', ') + '…' })) : null,
+      h('div', { class: 'actions' }, h('button', { class: 'btn primary', type: 'button', id: 'summary-done', text: 'Done', onclick: closeSummary })));
+    var overlay = h('div', { class: 'overlay', id: 'summary', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Workout summary',
+      onclick: function (e) { if (e.target === overlay) closeSummary(); } }, sheet);
+    document.body.appendChild(overlay);
+    var b = $('#summary-done'); if (b && b.focus) b.focus();
+    return d;
+  }
+
   /* ---- UI: exercise card ------------------------------------------------------------------ */
-  function exerciseCard(lift, dow, date) {
+  function exerciseCard(lift, dow, date, opts) {
+    opts = opts || {};
     var name = lift[0], tSets = lift[1], tReps = lift[2], per = lift[3] || '';
     var key = date + '|' + name;
     var saved = entryOn(name, date);
@@ -261,20 +497,29 @@
         rows.push(src ? { w: src.w, r: src.r, pre: true } : { w: '', r: tReps, pre: true });
       }
     }
-    var notesVal = saved ? (saved.notes || '') : (draft ? draft.notes || '' : '');
+    var notesVal = saved ? (saved.notes || '') : (draft ? draft.notes || '' : (opts.mini ? MINI_NOTE : ''));
+    var pr = saved ? prFor(name, saved) : null;
 
     var card = h('section', { class: 'card' + (saved ? ' done' : ''), 'data-ex': name });
     var info = badgeInfo(key, !!saved);
     var badge = h('span', { class: 'badge ' + info.cls, 'data-key': key, 'data-saved': saved ? '1' : '0', text: info.text });
     card.appendChild(h('div', { class: 'row spread' },
       h('div', { class: 'grow' }, h('div', { class: 'name', text: name }),
-        h('div', { class: 'target', text: tSets + ' × ' + tReps + (per ? ' ' + per : '') })), badge));
+        h('div', { class: 'target', text: tSets + ' × ' + tReps + (per ? ' ' + per : '') })),
+      h('div', { class: 'badges' }, pr ? h('span', { class: 'badge pr', title: prText(name, pr), text: '🏆 PR' }) : null, badge)));
     var guide = howTo(name); if (guide) card.appendChild(guide);
 
     card.appendChild(h('div', { class: 'last' }, last
       ? [h('span', { text: 'Last time (' + prettyDate(last.date) + '): ' }),
          h('b', { text: last.sets.map(function (s) { return fmt(s.w) + '×' + fmt(s.r); }).join('  ·  ') })]
       : 'No previous session yet'));
+    var beat = suggestTarget(name, tSets, tReps, date);
+    if (beat) {
+      card.appendChild(h('div', { class: 'beat' },
+        h('span', { class: 'beat-last' }, 'Top set last time ', h('b', { text: fmt(beat.last.w) + ' × ' + fmt(beat.last.r) })),
+        h('span', { class: 'beat-goal' }, 'Beat it: ', h('b', { text: fmt(beat.w) + ' × ' + fmt(beat.r) }),
+          h('i', { text: beat.kind === 'weight' ? ' +' + WEIGHT_STEP + ' ' + UNIT + ' (all reps hit twice running)' : ' +1 rep' }))));
+    }
 
     var setsEl = h('div', { class: 'sets' });
     var fields = [];
@@ -307,10 +552,17 @@
     var saveBtn = h('button', { class: 'btn primary', type: 'button', text: saved ? 'Update' : 'Save', onclick: function () {
       var sets = readSets(false);
       if (!sets.length) { toast('Enter at least one set'); return; }
-      var entry = { date: date, ts: isoLocal(), day: dayLabel(dow, date), sets: sets, notes: notesInput.value.trim() };
+      var notes = notesInput.value.trim();
+      if (opts.mini && !isMiniNote(notes)) notes = notes ? MINI_NOTE + ' · ' + notes : MINI_NOTE;
+      var entry = { date: date, ts: isoLocal(), day: dayLabel(dow, date), sets: sets, notes: notes };
+      var wasAllSaved = allSaved(opts.lifts || [lift], date);
       var ok = saveEntry(name, entry);
-      toast(ok ? 'Saved' : 'Storage full or blocked, not saved!');
-      card.replaceWith(exerciseCard(lift, dow, date));
+      var newPr = ok ? prFor(name, entry) : null;
+      if (newPr) toast('🏆 New PR! ' + prText(name, newPr), 3600); else toast(ok ? 'Saved' : 'Storage full or blocked, not saved!');
+      card.replaceWith(exerciseCard(lift, dow, date, opts));
+      refreshWeek(date);
+      /* the save that completes the day's last exercise opens the summary (later edits don't re-open it) */
+      if (ok && !wasAllSaved && allSaved(opts.lifts || [lift], date)) showSummary(date, dow);
     } });
     card.appendChild(h('div', { class: 'actions' },
       h('button', { class: 'btn small ghost', type: 'button', text: '+ Set', onclick: function () {
@@ -407,6 +659,8 @@
         h('button', { type: 'button', text: 'Set up sync', onclick: function () { go('settings'); } })));
     }
 
+    root.appendChild(weekCard(date));
+
     var chips = h('div', { class: 'chips', role: 'tablist' });
     [1, 2, 3, 4, 5].forEach(function (d) {
       var p = PLAN.DAYS[d];
@@ -416,6 +670,12 @@
     chips.appendChild(h('button', { type: 'button', class: 'chip' + (dow === 0 ? ' on' : ''), text: 'Rest', onclick: function () { state.dow = 0; render(); } }));
     root.appendChild(chips);
 
+    var mini = !!day && miniOn(date, dow), lifts = viewLifts(day, mini), exOpts = { mini: mini, lifts: lifts };
+    if (day && !mini) {
+      root.appendChild(h('button', { class: 'btn mini-btn', type: 'button', onclick: function () { setMini(date, dow, true); render(); } },
+        h('span', { class: 'mini-t', text: 'Short on time? 15-minute version' }),
+        h('span', { class: 'mini-s', text: '2 main lifts · 2 hard sets each · counts as a session' })));
+    }
     root.appendChild(bodyweightCard(date, dow));
 
     if (!day) {
@@ -424,14 +684,31 @@
         h('p', { class: 'muted', text: 'Recover, walk, stretch. Tap a day above if you want to train anyway.' })));
       return;
     }
+    function finishBtn() {
+      return h('div', { class: 'actions finish' }, h('button', { class: 'btn' + (mini ? ' primary' : ''), type: 'button', id: 'finish-workout', text: 'Finish workout', onclick: function () {
+        if (!liftEntries(date).length) { toast('Save an exercise first'); return; }
+        showSummary(date, dow);
+      } }));
+    }
+    if (mini) {
+      root.appendChild(h('section', { class: 'card minibox' },
+        h('div', { class: 'name', text: '15-minute version' }),
+        h('p', { class: 'small muted', text: 'Two main lifts, two hard sets each, then you’re done. This counts as a session. Showing up is what matters.' }),
+        h('div', { class: 'actions' }, h('button', { class: 'btn small ghost', type: 'button', text: 'Switch to the full workout', onclick: function () { setMini(date, dow, false); render(); } }))));
+      root.appendChild(h('h2', { text: 'Lifting · 2 hard sets each' }));
+      lifts.forEach(function (lift) { root.appendChild(exerciseCard(lift, dow, date, exOpts)); });
+      root.appendChild(finishBtn());
+      return;
+    }
     root.appendChild(h('h2', { text: 'Warm-up' }));
     root.appendChild(checklistCard('Warm-up (5 min)', PLAN.WARMUP, 'w', date));
     root.appendChild(h('h2', { text: 'Lifting' }));
-    day.lifts.forEach(function (lift) { root.appendChild(exerciseCard(lift, dow, date)); });
+    lifts.forEach(function (lift) { root.appendChild(exerciseCard(lift, dow, date, exOpts)); });
     root.appendChild(h('h2', { text: 'Finisher' }));
     root.appendChild(finisherCard(day.finisher, dow, date));
     root.appendChild(h('h2', { text: 'Cooldown' }));
     root.appendChild(checklistCard('Yoga cooldown (~10 min)', PLAN.COOLDOWN, 'c', date));
+    root.appendChild(finishBtn());
   }
 
   /* ---- UI: Progress (inline SVG, no libs) -------------------------------------------------- */
@@ -592,6 +869,7 @@
     render();
     if (navigator.storage && navigator.storage.persist) { try { navigator.storage.persist(); } catch (e) {} }
     window.addEventListener('online', flush);
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeSummary(); });
     document.addEventListener('visibilitychange', function () {
       if (document.visibilityState === 'visible') {
         if (state.date !== dateStr() && state.tab === 'today' && state.dow == null) { state.date = dateStr(); render(); }
@@ -605,7 +883,8 @@
     }
   }
 
-  window.WorkoutApp = { state: state, K: K, flush: flush, saveEntry: saveEntry, rowsFor: rowsFor, topSet: topSet, toCSV: toCSV, allRows: allRows, queue: queue, history: history, render: render, dateStr: dateStr, isoLocal: isoLocal, go: go, scriptUrl: scriptUrl };
+  window.WorkoutApp = { state: state, K: K, flush: flush, saveEntry: saveEntry, rowsFor: rowsFor, topSet: topSet, toCSV: toCSV, allRows: allRows, queue: queue, history: history, render: render, dateStr: dateStr, isoLocal: isoLocal, go: go, scriptUrl: scriptUrl,
+    weekInfo: weekInfo, streakInfo: streakInfo, suggestTarget: suggestTarget, prFor: prFor, miniLifts: miniLifts, summaryData: summaryData, showSummary: showSummary, sessionMap: sessionMap, addDays: addDays, weekStart: weekStart };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();

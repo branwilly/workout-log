@@ -138,6 +138,174 @@ const cards = w => [...w.document.querySelectorAll('section.card[data-ex]')];
   const csv = A.toCSV(A.allRows());
   ok(csv.split('\n')[0] === 'timestamp,date,day,exercise,set number,weight,reps,notes' && csv.split('\n').length > 3, 'CSV export has header + rows');
 
+  // =====================================================================================
+  console.log('\nMotivation features (fixed clock: Thu 2026-10-29 07:30)');
+  const NOW = new Date(2026, 9, 29, 7, 30, 0).getTime();
+  const fixClock = win => {
+    const RD = win.Date;
+    function FD(...a) { return a.length ? new RD(...a) : new RD(NOW); }
+    FD.prototype = RD.prototype; FD.now = () => NOW; FD.UTC = RD.UTC; FD.parse = RD.parse;
+    win.Date = FD;
+  };
+  const sess = (date, day, sets, notes = '') => ({ date, ts: date + 'T07:10:00-04:00', day, sets: sets.map(([w, r]) => ({ w, r })), notes });
+  const seed = {
+    // Mon 10/26 full push, Tue 10/27 only a 15-min tap (below), Wed 10/28 nothing
+    'Chest press machine': [
+      sess('2026-10-12', 'Mon push', [[80, 10], [80, 10], [80, 10]]),
+      sess('2026-10-19', 'Mon push', [[85, 10], [85, 10], [85, 10]]),
+      sess('2026-10-26', 'Mon push', [[90, 10], [90, 10], [90, 9]])
+    ],
+    'Seated cable row': [sess('2026-10-27', 'Tue pull', [[100, 12], [100, 12]], '15-min version')],
+    'Bodyweight': [sess('2026-10-28', 'Wed legs', [[184, '']])],
+    'Stair stepper': [Object.assign(sess('2026-10-28', 'Wed legs', [['', '']]), { minutes: 10 })]
+  };
+  const wm = await boot(fakeFetch, win => {
+    fixClock(win);
+    win.localStorage.setItem('wl.history', JSON.stringify(seed));
+    win.localStorage.setItem('wl.mini', JSON.stringify({ '2026-10-27': { dow: 2 } }));
+  });
+  const M = wm.WorkoutApp, MD = wm.document;
+  ok(M.dateStr() === '2026-10-29', 'clock fixed to Thu 2026-10-29');
+
+  // 1. weekly dots + ring
+  let wk = M.weekInfo('2026-10-29');
+  ok(wk.start === '2026-10-26' && wk.days.map(d => d.status).join() === 'done,done,missed,today,upcoming', 'week dots: done, done, missed, today, upcoming');
+  ok(wk.days[1].kind === 'mini' && wk.days[0].kind === 'full', 'Tue shows as 15-min, Mon as full');
+  ok(wk.count === 2, 'Bodyweight and finisher alone do not count as a session (Wed stays empty)');
+  ok(MD.querySelectorAll('.weekcard .dotd').length === 5 && MD.querySelector('.weekcard .dotd.today.now') && MD.querySelector('.weekcard .dotd.mini'), 'dots rendered on Today screen');
+  ok(/2\s*of 5 sessions/.test(MD.querySelector('.weekcard .wk-count').textContent) && MD.querySelector('.weekcard svg.ring'), 'goal ring shows "2 of 5 sessions"');
+  ok(!/miss|lost|fail|behind|streak (lost|broken)/i.test(MD.querySelector('.weekcard').textContent + [...MD.querySelectorAll('.dotd')].map(d => d.getAttribute('aria-label')).join(' ').replace(/no session/g, '')), 'no guilt language on the week card');
+  ok(M.weekInfo('2026-11-01').start === '2026-10-26' && M.weekInfo('2026-11-02').start === '2026-11-02', 'weeks run Mon..Sun (Sunday belongs to the week before)');
+
+  // 6. weekly streak
+  let st = M.streakInfo('2026-10-29');
+  ok(st.weeks === 0, 'streak 0 when the last week had < 4 sessions and this week has 2');
+  const hs = {}; // build 3 prior weeks: 4,5,4 sessions + current week with 1 session (in-progress must not break streak)
+  const addSess = (d) => { (hs['Back squat'] = hs['Back squat'] || []).push(sess(d, 'Wed legs', [[100, 8]])); };
+  ['2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08'].forEach(addSess);                                  // 4 (one skipped day)
+  ['2026-10-12', '2026-10-13', '2026-10-14', '2026-10-15', '2026-10-16'].forEach(addSess);                    // 5
+  ['2026-10-19', '2026-10-20', '2026-10-21', '2026-10-22'].forEach(addSess);                                  // 4
+  addSess('2026-10-26');                                                                                      // current week: 1 so far
+  wm.localStorage.setItem('wl.history', JSON.stringify(hs)); wm.localStorage.setItem('wl.mini', '{}');
+  st = M.streakInfo('2026-10-29');
+  ok(st.weeks === 3 && st.best === 3, 'streak counts 3 weeks at >= 4 sessions; an in-progress week does not break it');
+  addSess('2026-10-27'); addSess('2026-10-28'); addSess('2026-10-29');
+  wm.localStorage.setItem('wl.history', JSON.stringify(hs));
+  st = M.streakInfo('2026-10-29');
+  ok(st.weeks === 4, 'current week joins the streak once it reaches 4');
+  delete hs['Back squat'];
+  ['2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08', '2026-10-12', '2026-10-13', '2026-10-14', '2026-10-15', '2026-10-19', '2026-10-20'].forEach(addSess);
+  wm.localStorage.setItem('wl.history', JSON.stringify(hs));
+  st = M.streakInfo('2026-10-29');
+  ok(st.weeks === 0 && st.best === 2, 'a week under 4 resets the current streak but "best" is remembered (2)');
+
+  // back to the seeded data for the card-level tests
+  wm.localStorage.setItem('wl.history', JSON.stringify(seed)); wm.localStorage.setItem('wl.mini', JSON.stringify({ '2026-10-27': { dow: 2 } }));
+  M.state.date = '2026-10-29'; M.state.dow = 1; M.render();   // view a Mon-style push day on Thursday's date
+
+  // 2. beat last time
+  let t = M.suggestTarget('Chest press machine', 3, 10, '2026-10-29');
+  ok(t.last.w === 90 && t.last.r === 10 && t.kind === 'rep' && t.w === 90 && t.r === 11, 'last time 90x10,90x10,90x9 (missed a rep) -> same weight, +1 rep: 90 x 11');
+  seed['Chest press machine'][1] = sess('2026-10-19', 'Mon push', [[85, 10], [85, 10], [85, 9]]);
+  seed['Chest press machine'][2] = sess('2026-10-26', 'Mon push', [[90, 10], [90, 10], [90, 10]]);
+  wm.localStorage.setItem('wl.history', JSON.stringify(seed));
+  t = M.suggestTarget('Chest press machine', 3, 10, '2026-10-29');
+  ok(t.kind === 'rep' && t.w === 90 && t.r === 11, 'hit all reps last time but not the session before -> still +1 rep');
+  seed['Chest press machine'][1] = sess('2026-10-19', 'Mon push', [[85, 10], [85, 11], [85, 10]]);
+  wm.localStorage.setItem('wl.history', JSON.stringify(seed));
+  t = M.suggestTarget('Chest press machine', 3, 10, '2026-10-29');
+  ok(t.kind === 'weight' && t.w === 92.5 && t.r === 10, 'all target reps hit two sessions running -> smallest weight step: 92.5 x 10');
+  ok(M.suggestTarget('Never done', 3, 10, '2026-10-29') === null, 'no history -> no target');
+  M.render();
+  const cp = cards(wm)[0];
+  ok(/Top set last time\s*90 × 10/.test(cp.querySelector('.beat').textContent) && /Beat it:\s*92\.5 × 10/.test(cp.querySelector('.beat').textContent), 'exercise card shows last top set and the suggested target');
+  ok(cards(wm)[1].querySelector('.beat') === null, 'exercise without history has no target line');
+
+  // 3. PR badge + toast
+  ok(M.prFor('Chest press machine', sess('2026-10-29', 'x', [[92.5, 8]])).type === 'weight', 'heavier than best weight is a PR');
+  ok(M.prFor('Chest press machine', sess('2026-10-29', 'x', [[90, 11]])).type === 'reps', 'more reps at the same weight is a PR');
+  ok(M.prFor('Chest press machine', sess('2026-10-29', 'x', [[90, 10], [85, 10]])) === null, 'tying the best is not a PR');
+  ok(M.prFor('Chest press machine', sess('2026-10-29', 'x', [[87.5, 20]])) === null, 'new weight below your best with no weight record is not a PR');
+  ok(M.prFor('Brand new lift', sess('2026-10-29', 'x', [[50, 10]])) === null, 'first ever log is a baseline, not a PR');
+  ok(M.prFor('Chest press machine', sess('2026-10-12', 'x', [[80, 10]])) === null, 'an old day re-saved is not a PR (compared with other dates only, never itself)');
+  let ins = cp.querySelectorAll('.setrow input');
+  ins[0].value = '92.5'; ins[0].dispatchEvent(new wm.Event('input'));
+  click(wm, cp.querySelector('button.primary'));
+  ok(/PR/.test(MD.querySelector('#toast').textContent) && MD.querySelector('#toast').classList.contains('show'), 'PR toast on save');
+  ok(MD.querySelector('section[data-ex="Chest press machine"] .badge.pr'), 'PR badge shown on the saved card');
+  ok(!MD.querySelector('#summary'), 'summary does not open until the last exercise is saved');
+
+  // 4. 15-minute version
+  wm.localStorage.setItem('wl.history', JSON.stringify(seed)); wm.localStorage.setItem('wl.mini', JSON.stringify({ '2026-10-27': { dow: 2 } }));   // drop the PR-test save
+  M.state.dow = 1; M.render();
+  const miniBtn = MD.querySelector('.mini-btn');
+  ok(miniBtn && /15-minute version/.test(miniBtn.textContent), '"Short on time? 15-minute version" button on Today');
+  ok(JSON.stringify(M.miniLifts(wm.PLAN.DAYS[1]).map(l => l.slice(0, 2))) === JSON.stringify([['Chest press machine', 2], ['Seated dumbbell shoulder press', 2]]), 'mini session = 2 main lifts x 2 sets from the day plan');
+  for (const d of [1, 2, 3, 4, 5]) { const ml = M.miniLifts(wm.PLAN.DAYS[d]); ok(ml.length === 2 && ml.every(l => wm.PLAN.DAYS[d].lifts.some(x => x[0] === l[0])), `day ${d}: mini lifts exist in the plan`); }
+  const doneBefore = M.weekInfo('2026-10-29').count;
+  M.state.date = '2026-10-29'; M.state.dow = 1; M.render();
+  click(wm, MD.querySelector('.mini-btn'));
+  ok(cards(wm).length === 2 && cards(wm).every(c => c.querySelector('.target').textContent.startsWith('2 × ')), 'mini view shows two exercise cards with 2 sets');
+  ok(!MD.querySelector('.mini-btn') && /15-minute version/.test(MD.querySelector('.minibox').textContent) && !/Warm-up/.test(MD.querySelector('#view').textContent), 'mini view hides warm-up/finisher/cooldown and the button');
+  ok(M.weekInfo('2026-10-29').count === doneBefore + 1 && MD.querySelector('.weekcard .dotd.done.mini.now'), 'tapping the 15-minute option counts the day (dot is half-filled)');
+  ok(cards(wm)[0].querySelector('.notes').value === '15-min version', 'notes pre-filled with "15-min version"');
+  // log both, check rows/notes, summary auto-opens after the last one
+  calls.length = 0; mode = 'ok';
+  wm.localStorage.setItem(M.K.settings, JSON.stringify({ url: 'https://script.google.com/macros/s/TEST/exec' }));
+  const c1 = cards(wm)[0];
+  c1.querySelectorAll('.setrow input')[0].value = '95'; c1.querySelectorAll('.setrow input')[0].dispatchEvent(new wm.Event('input'));
+  click(wm, c1.querySelector('button.primary')); await tick(50);
+  ok(!MD.querySelector('#summary'), 'no summary after only the first of two mini lifts');
+  const posted = calls.map(c => JSON.parse(c.opts.body)).filter(b => b.rows[0].exercise === 'Chest press machine').pop();
+  ok(posted && posted.rows.length === 2 && posted.rows[0].notes === '15-min version' && posted.rows[0].weight === 95, 'sheet row has notes "15-min version" (existing columns only)');
+  ok(Object.keys(posted.rows[0]).sort().join() === 'date,day,exercise,notes,reps,set,timestamp,weight', 'row keys unchanged (no new sheet columns)');
+  const c2 = cards(wm)[1];
+  click(wm, c2.querySelector('button.primary')); await tick(50);
+  const sm = MD.querySelector('#summary');
+  ok(sm && /15-minute version done/.test(sm.textContent), 'summary opens after the last mini exercise is saved');
+
+  // 5. summary content
+  const sd = M.summaryData('2026-10-29', 1);
+  ok(sd.sets === 4 && sd.kind === 'mini' && sd.lifts === 2, 'summary: sets done (4), kind mini');
+  ok(sd.volume === 95 * 10 + 90 * 10, 'summary: volume = sum of weight x reps (95x10 + 90x10; reps-only sets add 0)');
+  ok(sd.focus.tomorrow && sd.focus.label === 'Fri pull + legs' && sd.focus.lifts.length === 3, 'summary: tomorrow is Fri pull + legs focus with lifts');
+  ok(/of 5 sessions this week/.test(sm.textContent) && sm.querySelector('.dots') && /Weekly streak/.test(sm.textContent), 'summary includes weekly progress + streak');
+  ok(/Tomorrow/.test(sm.textContent) && sm.querySelector('.stats'), 'summary shows tomorrow + stats');
+  click(wm, MD.querySelector('#summary-done'));
+  ok(!MD.querySelector('#summary'), 'summary closes');
+  // full-session summary compares against last same-day session, via Finish workout
+  M.state.date = '2026-10-29'; M.state.dow = 1; wm.localStorage.setItem('wl.mini', '{}'); M.render();
+  click(wm, MD.querySelector('#finish-workout'));
+  const fs1 = MD.querySelector('#summary');
+  ok(fs1 && /Workout done|15-minute version done/.test(fs1.textContent), 'Finish workout button opens the summary');
+  const sd2 = M.summaryData('2026-10-29', 1);
+  ok(sd2.kind === 'mini' && /isn.t compared/.test(fs1.textContent), '15-min day is not compared to full sessions');
+  click(wm, MD.querySelector('#summary-done'));
+  // full session volume vs last same-day
+  const seed2 = JSON.parse(JSON.stringify(seed)); seed2['Chest press machine'].push(sess('2026-10-29', 'Mon push', [[95, 10], [95, 10], [95, 10]]));
+  wm.localStorage.setItem('wl.history', JSON.stringify(seed2));
+  const sd3 = M.summaryData('2026-10-29', 1);
+  ok(sd3.kind === 'full' && sd3.prev && sd3.prev.date === '2026-10-26' && sd3.prev.volume === 2700 && sd3.volume === 2850 && sd3.prs.length === 1, 'summary: volume 2850 vs last same-day 2700, 1 PR');
+  M.showSummary('2026-10-29', 1);
+  ok(/2,700 lb \(\+6% today\)/.test(MD.querySelector('#summary').textContent) && /🏆/.test(MD.querySelector('#summary').textContent), 'summary shows volume vs last same-day session and the PR');
+  click(wm, MD.querySelector('#summary-done'));
+  ok(MD.querySelector('#finish-workout'), 'Finish workout button present on full view');
+
+  // full workout: summary auto-opens when the last lift is saved
+  const w5 = await boot(fakeFetch, win => { fixClock(win); });
+  const M5 = w5.WorkoutApp; M5.state.date = '2026-10-29'; M5.state.dow = 4; M5.render();
+  const n5 = cards(w5).length;
+  for (let i = 0; i < n5; i++) {
+    ok(!w5.document.querySelector('#summary'), `no summary before exercise ${i + 1}/${n5}`);
+    click(w5, cards(w5)[i].querySelector('button.primary'));
+  }
+  ok(w5.document.querySelector('#summary') && /Workout done/.test(w5.document.querySelector('#summary').textContent), 'full workout: summary opens after the last exercise is saved');
+  click(w5, w5.document.querySelector('#summary-done'));
+  click(w5, cards(w5)[0].querySelector('button.primary'));
+  ok(!w5.document.querySelector('#summary'), 'editing a saved exercise later does not re-open the summary');
+  ok(M5.weekInfo('2026-10-29').days[3].status === 'done', 'logging a day marks its dot done');
+  ok(fs.readFileSync(path.join(root, 'sw.js'), 'utf8').includes("workout-log-v2"), 'service worker cache bumped to workout-log-v2');
+
   // --- weekend rest day
   const w2 = await boot(fakeFetch, win => {});
   w2.WorkoutApp.state.date = '2026-10-24'; w2.WorkoutApp.state.dow = null; w2.WorkoutApp.render();

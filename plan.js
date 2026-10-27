@@ -135,7 +135,8 @@
     }
   };
 
-  /* [name, sets, reps, per]  (per = "each arm" etc., shown next to the target) */
+  /* [name, sets, reps, per]  (per = "each arm" etc., shown next to the target)
+   * mini = the two main compound lifts for the "15-minute version" (2 hard sets each); names must match lifts. */
   var DAYS = {
     1: {
       key: 'mon', short: 'Mon', label: 'Mon push', title: 'Push',
@@ -147,6 +148,7 @@
         ['Cable lateral raise', 3, 12, 'each arm'],
         ['Rope pushdown', 3, 12]
       ],
+      mini: ['Chest press machine', 'Seated dumbbell shoulder press'],
       finisher: { name: 'Stair stepper', minutes: 10, label: 'Extra time: stair stepper' }
     },
     2: {
@@ -159,6 +161,7 @@
         ['Cable biceps curl', 3, 12],
         ['Dumbbell hammer curl', 2, 12]
       ],
+      mini: ['Seated cable row', 'Cable lat pulldown'],
       finisher: { name: 'Rowing machine', minutes: 5, label: 'Finish: easy rowing' }
     },
     3: {
@@ -171,6 +174,7 @@
         ['Cable pull-through', 3, 12],
         ['Calf raises', 3, 15]
       ],
+      mini: ['Back squat', 'Dumbbell Romanian deadlift'],
       finisher: { name: 'Stair stepper', minutes: 8, label: 'Finish: easy stair stepper' }
     },
     4: {
@@ -183,6 +187,7 @@
         ['Cable front raise', 2, 12],
         ['Overhead cable triceps extension', 3, 12]
       ],
+      mini: ['Dumbbell bench press', 'Dumbbell Arnold press'],
       finisher: { name: 'Stair stepper', minutes: 15, label: 'Extra time: stair stepper' }
     },
     5: {
@@ -196,6 +201,7 @@
         ['Leg curl machine', 2, 12],
         ['Goblet squat', 2, 12]
       ],
+      mini: ['Cable lat pulldown', 'Chest-supported dumbbell row'],
       finisher: { name: 'Stair stepper', minutes: 15, label: 'Finish: stair stepper' }
     }
   };

@@ -1,7 +1,7 @@
 /* Service worker: network-first (3s) for same-origin GETs with cache fallback, so the app
    opens offline in the gym and still picks up updates when online. Never touches POSTs
    or cross-origin requests (the Google Sheet sync). */
-var CACHE = 'workout-log-v1';
+var CACHE = 'workout-log-v2';
 var SHELL = ['./', './index.html', './style.css', './plan.js', './app.js',
   './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png',
   './icons/apple-touch-icon.png'];
