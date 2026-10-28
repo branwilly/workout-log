@@ -173,3 +173,38 @@ table.hist th { color: var(--muted); font-weight: 600; font-size: 12px; text-tra
 .sum-week .dotd.missed { background: var(--line); border-color: var(--line); }
 .sum-next { margin: 10px 2px; }
 @media (prefers-reduced-motion: reduce) { .sheet { animation: none; } .ring-fg { transition: none; } }
+
+/* coach cards, demos, evidence, leg day primer */
+a.btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+details.coach { margin: 10px 0 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--card2); padding: 2px 12px; }
+details.coach > summary { color: var(--accent); font-weight: 600; min-height: 44px; }
+.coach-body { padding: 0 0 12px; font-size: 15px; }
+.coach-body h4 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 16px 0 6px; font-weight: 700; }
+.coach-body p { margin: 4px 0; }
+.coach-body ol, .coach-body ul { margin: 4px 0; padding-left: 22px; }
+.coach-body li { margin: 4px 0; }
+.coach-body a, .primer-sec a, .ev a { color: var(--accent); word-break: break-word; }
+.coach-body .btn.small { color: var(--text); }
+.demo { margin: 8px 0 6px; }
+.demo-btns { flex-wrap: wrap; gap: 8px; }
+.btn.watch { background: var(--accent); border-color: var(--accent); color: var(--accent-ink) !important; font-weight: 700; }
+.ytbox { margin-top: 8px; }
+iframe.yt { width: 100%; aspect-ratio: 16 / 9; border: 0; border-radius: 12px; background: #000; display: block; }
+.demo-cap { margin-top: 6px; }
+.more-demos, .lib { margin: 6px 0; line-height: 1.5; }
+.fixes { list-style: none; padding-left: 0 !important; }
+.fixes li { border-left: 3px solid var(--warn); padding-left: 10px; margin: 8px 0; }
+.ev { margin: 6px 0; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+.ev p { margin: 6px 0; }
+.evb { display: inline-block; font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; background: var(--card2); color: var(--muted); }
+.evb.ev-strong { background: #12372b; color: var(--accent); }
+.evb.ev-moderate { background: #16303f; color: #7dd3fc; }
+.evb.ev-limited { background: #3a2f0f; color: var(--warn); }
+.evb.ev-practice { background: #2a2230; color: #d8b4fe; }
+.refs { margin: 6px 0 0; padding-left: 18px; font-size: 14px; }
+.refs .doi { margin-left: 4px; font-size: 12px; opacity: .85; }
+.safety { margin-top: 12px; }
+.primer-btn { margin-top: 4px; }
+.primer-intro { margin: 10px 4px; }
+.primer-sec ol { padding-left: 22px; margin: 8px 0; }
+.primer-sec li { margin: 6px 0; }

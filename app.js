@@ -14,7 +14,7 @@
    * Normally leave this empty: paste the Apps Script web-app URL once in Settings (stored in
    * localStorage). If you ever want it baked in, put the URL here instead. */
   var DEFAULT_SCRIPT_URL = '';
-  var APP_VERSION = '1.1.0';
+  var APP_VERSION = '1.2.0';
   var UNIT = 'lb';
   var URL_PATTERN = /^https:\/\/script\.google\.com\/.+\/exec$/;
 
@@ -70,7 +70,7 @@
   }
 
   /* ---- state + storage ---------------------------------------------------------------- */
-  var state = { tab: 'today', date: dateStr(), dow: null, pex: null, flushing: false, lastError: '' };
+  var state = { tab: 'today', date: dateStr(), dow: null, pex: null, flushing: false, lastError: '', primer: false };
 
   function settings() { return LS.get(K.settings, {}); }
   function scriptUrl() { return (settings().url || DEFAULT_SCRIPT_URL || '').trim(); }
@@ -408,6 +408,93 @@
       h('p', { text: g.how }), h('p', { class: 'tip', text: 'Tip: ' + g.tip }));
   }
 
+  /* ---- UI: coach cards + demo videos + leg day primer ---------------------------------------- */
+  function extLink(href, text, cls) {
+    return h('a', { href: href, target: '_blank', rel: 'noopener noreferrer', class: cls || null, text: text });
+  }
+  function ytWatchUrl(id) { return 'https://www.youtube.com/watch?v=' + id; }
+  function ytEmbedUrl(id) { return 'https://www.youtube-nocookie.com/embed/' + id + '?autoplay=1&rel=0&playsinline=1'; }
+  /* The iframe only exists after a tap, so opening the app (or going offline) never touches YouTube. */
+  function loadDemo(box, v) {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) { toast('You are offline. Demos need internet.'); return; }
+    box.textContent = '';
+    box.appendChild(h('iframe', { class: 'yt', src: ytEmbedUrl(v.id), title: v.title, loading: 'lazy', allowfullscreen: true,
+      allow: 'accelerometer; autoplay; encrypted-media; picture-in-picture; fullscreen', referrerpolicy: 'strict-origin-when-cross-origin' }));
+  }
+  function demoRow(id, primary) {
+    var v = PLAN.VIDEOS && PLAN.VIDEOS[id];
+    if (!v) return null;
+    var box = h('div', { class: 'ytbox' });
+    return h('div', { class: 'demo' + (primary ? ' primary-demo' : '') },
+      h('div', { class: 'row demo-btns' },
+        h('button', { type: 'button', class: 'btn small watch', 'data-yt': id, 'aria-label': 'Watch demo: ' + v.title, text: '▶ Watch demo', onclick: function () { loadDemo(box, v); } }),
+        extLink(ytWatchUrl(id), 'Open on YouTube ↗', 'btn small ghost')),
+      box,
+      h('div', { class: 'small muted demo-cap', text: v.src + ': ' + v.title }));
+  }
+  function evidenceBlock(ev) {
+    var lv = (PLAN.LEVELS && PLAN.LEVELS[ev.lvl]) || { label: ev.lvl, desc: '' };
+    var refs = h('ul', { class: 'refs' });
+    (ev.refs || []).forEach(function (k) {
+      var r = PLAN.REFS[k]; if (!r) return;
+      refs.appendChild(h('li', null,
+        extLink('https://pubmed.ncbi.nlm.nih.gov/' + r.pmid + '/', r.cite + ' (' + r.journal + ')'), ' ',
+        extLink('https://doi.org/' + encodeURI(r.doi).replace(/</g, '%3C').replace(/>/g, '%3E'), 'DOI', 'doi')));
+    });
+    return h('div', { class: 'ev' },
+      h('div', null, h('span', { class: 'evb ev-' + ev.lvl, title: lv.desc, text: 'Evidence: ' + lv.label }), h('span', { class: 'small muted', text: ' ' + lv.desc })),
+      h('p', { text: ev.text }), (ev.refs || []).length ? refs : null);
+  }
+  function listOf(tag, items) { return h(tag, null, items.map(function (t) { return h('li', { text: t }); })); }
+  function coachCard(name) {
+    var c = PLAN.COACH && PLAN.COACH[name];
+    if (!c) return null;
+    var body = h('div', { class: 'coach-body' });
+    body.appendChild(demoRow(c.demo, true));
+    var more = (c.more || []).map(function (id) { return PLAN.VIDEOS[id]; }).filter(Boolean);
+    if (more.length) {
+      body.appendChild(h('div', { class: 'small more-demos' }, h('b', { text: 'More demos: ' }),
+        more.map(function (v, i) { return [i ? ' · ' : '', extLink(ytWatchUrl(v.id), v.src + ': ' + v.title + ' ↗')]; })));
+    }
+    if (c.lib) body.appendChild(h('div', { class: 'small lib' }, h('b', { text: c.lib.kind + ': ' }), extLink(c.lib.url, c.lib.src + ' - ' + c.lib.title + ' ↗')));
+    body.appendChild(h('h4', { text: 'Muscles worked' }));
+    body.appendChild(h('p', null, h('b', { text: 'Main: ' }), c.muscles.main, h('br'), h('b', { text: 'Helpers: ' }), c.muscles.help));
+    body.appendChild(h('h4', { text: 'Setup and execution' }));
+    body.appendChild(listOf('ol', c.steps));
+    body.appendChild(h('h4', { text: 'What a trainer would say' }));
+    body.appendChild(listOf('ul', c.cues));
+    body.appendChild(h('h4', { text: 'Common mistakes and fixes' }));
+    body.appendChild(h('ul', { class: 'fixes' }, c.fixes.map(function (f) { return h('li', null, h('b', { text: f[0] + '. ' }), f[1]); })));
+    body.appendChild(h('h4', { text: 'What it should feel like' }));
+    body.appendChild(h('p', { text: c.feel }));
+    body.appendChild(h('h4', { text: 'Breathing and tempo' }));
+    body.appendChild(h('p', null, h('b', { text: 'Breathing: ' }), c.breath, h('br'), h('b', { text: 'Tempo: ' }), c.tempo));
+    body.appendChild(h('h4', { text: 'Easier and harder' }));
+    body.appendChild(h('p', null, h('b', { text: 'Easier: ' }), c.easier, h('br'), h('b', { text: 'Harder: ' }), c.harder));
+    if (c.notes && c.notes.length) {
+      body.appendChild(h('h4', { text: 'Leg day notes' }));
+      body.appendChild(listOf('ul', c.notes));
+    }
+    body.appendChild(h('h4', { text: 'The evidence' }));
+    body.appendChild(evidenceBlock(c.ev));
+    body.appendChild(h('p', { class: 'small muted safety', text: PLAN.SAFETY }));
+    return h('details', { class: 'coach', 'data-coach': name }, h('summary', { text: 'Coach card: form, cues, demo, evidence' }), body);
+  }
+  function renderPrimer(root) {
+    var P = PLAN.PRIMER;
+    root.appendChild(h('div', { class: 'top' }, h('div', null, h('h1', { text: P.title }), h('p', { class: 'sub', text: 'Squat, hinge, rack safety, starting weight, warm-up' }))));
+    root.appendChild(h('button', { type: 'button', class: 'btn small ghost', id: 'primer-back', text: '← Back to workout', onclick: function () { state.primer = false; render(); window.scrollTo(0, 0); } }));
+    root.appendChild(h('p', { class: 'primer-intro', text: P.intro }));
+    P.sections.forEach(function (sec) {
+      var card = h('section', { class: 'card primer-sec' }, h('div', { class: 'name', text: sec.h }), listOf('ol', sec.items));
+      (sec.demos || []).forEach(function (id) { card.appendChild(demoRow(id)); });
+      card.appendChild(evidenceBlock(sec.ev));
+      root.appendChild(card);
+    });
+    root.appendChild(h('p', { class: 'small muted safety', text: PLAN.SAFETY }));
+    root.appendChild(h('button', { type: 'button', class: 'btn', text: 'Back to workout', onclick: function () { state.primer = false; render(); window.scrollTo(0, 0); } }));
+  }
+
   /* ---- UI: motivation pieces ---------------------------------------------------------------- */
   function ringSVG(count, goal) {
     var R = 24, C = 2 * Math.PI * R, frac = Math.min(1, count / goal);
@@ -508,6 +595,7 @@
         h('div', { class: 'target', text: tSets + ' × ' + tReps + (per ? ' ' + per : '') })),
       h('div', { class: 'badges' }, pr ? h('span', { class: 'badge pr', title: prText(name, pr), text: '🏆 PR' }) : null, badge)));
     var guide = howTo(name); if (guide) card.appendChild(guide);
+    var coach = coachCard(name); if (coach) card.appendChild(coach);
 
     card.appendChild(h('div', { class: 'last' }, last
       ? [h('span', { text: 'Last time (' + prettyDate(last.date) + '): ' }),
@@ -641,6 +729,7 @@
 
   /* ---- UI: Today ---------------------------------------------------------------------------- */
   function renderToday(root) {
+    if (state.primer && PLAN.PRIMER) { renderPrimer(root); return; }
     var date = state.date, dow = state.dow == null ? defaultDow(date) : state.dow;
     var realToday = dateStr();
     var day = dayForDow(dow);
@@ -650,7 +739,8 @@
     } });
     root.appendChild(h('div', { class: 'top' },
       h('div', null, h('h1', { text: date === realToday ? 'Today' : prettyDate(date) }),
-        h('p', { class: 'sub', text: day ? day.title + ' · ' + day.label : (dowOf(date) === 0 || dowOf(date) === 6 ? 'Weekend: rest or pick a day' : 'Pick a day') })),
+        h('p', { class: 'sub', text: day ? day.title + ' · ' + day.label : (dowOf(date) === 0 || dowOf(date) === 6 ? 'Weekend: rest or pick a day' : 'Pick a day') }),
+        (PLAN.PRIMER && (dow === 3 || dow === 5)) ? h('button', { type: 'button', class: 'btn small primer-btn', id: 'primer-open', text: '🦵 Leg day primer', onclick: function () { state.primer = true; render(); window.scrollTo(0, 0); } }) : null),
       syncPill()));
     root.appendChild(dateInput);
 
@@ -859,7 +949,7 @@
     $$('#tabs button').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-tab') === state.tab); });
     window.scrollTo(0, y);
   }
-  function go(tab) { state.tab = tab; try { history_replace(tab); } catch (e) {} render(); window.scrollTo(0, 0); }
+  function go(tab) { state.tab = tab; state.primer = false; try { history_replace(tab); } catch (e) {} render(); window.scrollTo(0, 0); }
   function history_replace(tab) { if (window.history && window.history.replaceState) window.history.replaceState(null, '', '#' + tab); }
 
   function init() {

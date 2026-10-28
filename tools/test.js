@@ -18,6 +18,7 @@ async function boot(fetchImpl, pre) {
   w.confirm = () => true;
   if (pre) pre(w);
   w.eval(fs.readFileSync(path.join(root, 'plan.js'), 'utf8'));
+  if (!w.__noCoach) w.eval(fs.readFileSync(path.join(root, 'coach.js'), 'utf8'));
   w.eval(fs.readFileSync(path.join(root, 'app.js'), 'utf8'));
   await tick();
   return w;
@@ -304,7 +305,7 @@ const cards = w => [...w.document.querySelectorAll('section.card[data-ex]')];
   click(w5, cards(w5)[0].querySelector('button.primary'));
   ok(!w5.document.querySelector('#summary'), 'editing a saved exercise later does not re-open the summary');
   ok(M5.weekInfo('2026-10-29').days[3].status === 'done', 'logging a day marks its dot done');
-  ok(fs.readFileSync(path.join(root, 'sw.js'), 'utf8').includes("workout-log-v2"), 'service worker cache bumped to workout-log-v2');
+  ok(fs.readFileSync(path.join(root, 'sw.js'), 'utf8').includes("workout-log-v3"), 'service worker cache bumped to workout-log-v3');
 
   // --- weekend rest day
   const w2 = await boot(fakeFetch, win => {});
@@ -312,11 +313,75 @@ const cards = w => [...w.document.querySelectorAll('section.card[data-ex]')];
   ok(w2.document.querySelector('.rest') && w2.document.querySelectorAll('section.card[data-ex]').length === 0, 'Saturday: rest card, chips available');
   ok(w2.document.querySelectorAll('.chip').length === 6, 'day chips (Mon-Fri + Rest) to pick a day');
 
+  // --- coach cards, demos, leg day primer (v1.2.0)
+  console.log('\nCoach cards + demos + leg day primer');
+  const CP = require(path.join(root, 'coach.js'));
+  const guideNames = Object.keys(CP.GUIDE);
+  ok(guideNames.length === 28 && guideNames.every(n => CP.COACH[n]) && Object.keys(CP.COACH).length === guideNames.length, `every one of the ${guideNames.length} exercises has a coach card (and no orphans)`);
+  ok(Object.values(CP.DAYS).every(d => d.lifts.every(l => CP.COACH[l[0]])), 'every lift in every day of plan.js has a coach card');
+  const ytId = /^[A-Za-z0-9_-]{11}$/;
+  for (const [n, c] of Object.entries(CP.COACH)) {
+    const v = CP.VIDEOS[c.demo];
+    const good = c.steps.length >= 3 && c.steps.length <= 6 && c.cues.length === 3 && c.fixes.length >= 3 && c.fixes.every(f => f.length === 2 && f[0] && f[1]) &&
+      c.muscles.main && c.muscles.help && c.feel && c.breath && c.tempo && c.easier && c.harder && c.ev && c.ev.text && CP.LEVELS[c.ev.lvl];
+    ok(good, `${n}: card has 3-6 steps, 3 cues, mistakes, muscles, feel, breathing, tempo, easier/harder, evidence`);
+    ok(v && ytId.test(v.id) && v.src && v.title && (c.more || []).every(m => CP.VIDEOS[m]), `${n}: demo has id, channel and title`);
+    ok(c.ev.lvl === 'practice' || c.ev.refs.length > 0, `${n}: any non-practice evidence has a citation`);
+    ok(c.ev.refs.every(k => CP.REFS[k]), `${n}: citations exist in REFS`);
+    ok(!c.lib || /^https:\/\//.test(c.lib.url), `${n}: library link is https`);
+  }
+  ok(Object.values(CP.REFS).every(r => /^\d+$/.test(r.pmid) && /^10\./.test(r.doi) && r.cite && r.journal && r.title), 'every reference has PMID, DOI, cite, journal and title');
+  ok(CP.PRIMER.sections.length === 6 && CP.PRIMER.sections.every(s => s.items.length >= 3 && s.ev && (s.demos || []).every(d => CP.VIDEOS[d])), 'primer: 6 sections with items, evidence and valid demos');
+  ok(/not medical advice/i.test(CP.SAFETY) && /sharp pain/i.test(CP.SAFETY), 'safety line present');
+
+  // renders in the app: collapsed by default, lazy video, links open in a new tab
+  const wc = await boot(fakeFetch, win => { fixClock(win); });
+  const MC = wc.WorkoutApp, CD = wc.document;
+  for (const dow of [1, 2, 3, 4, 5]) {
+    MC.state.date = '2026-10-' + (26 + dow - 1); MC.state.dow = dow; MC.render();
+    const cs = cards(wc);
+    ok(cs.length > 0 && cs.every(c => { const d = c.querySelector('details.coach'); return d && !d.open && d.querySelector('summary') && d.querySelector('button.watch') && d.querySelector('.ev') && /not medical advice/i.test(d.textContent); }), `day ${dow}: every exercise card has a collapsed Coach card with Watch demo + evidence + safety line`);
+  }
+  MC.state.date = '2026-10-28'; MC.state.dow = 3; MC.render();
+  ok(!CD.querySelector('iframe'), 'no iframe (no YouTube request) until a demo is tapped');
+  const sq = cards(wc).find(c => c.dataset.ex === 'Back squat');
+  ok(sq.querySelectorAll('details').length >= 2 && sq.querySelector('details.coach'), 'back squat keeps the how-to and adds the coach card');
+  ok([...sq.querySelectorAll('.coach-body a')].every(a => a.target === '_blank' && /noopener/.test(a.rel) && /^https:\/\//.test(a.href)), 'back squat: every coach card link opens in a new tab with noopener');
+  ok(sq.querySelectorAll('.coach-body a[href*="pubmed.ncbi.nlm.nih.gov"]').length >= 2 && sq.querySelector('.coach-body a[href^="https://doi.org/"]'), 'back squat: PubMed + DOI evidence links');
+  click(wc, sq.querySelector('button.watch'));
+  const ifr = sq.querySelector('iframe.yt');
+  ok(ifr && ifr.getAttribute('src').startsWith('https://www.youtube-nocookie.com/embed/my0tLDaWyDU') && ifr.getAttribute('loading') === 'lazy', 'tap creates a lazy youtube-nocookie iframe');
+  ok(CD.querySelectorAll('iframe').length === 1, 'only the tapped demo loads');
+
+  // offline-safe: tapping a demo offline shows a message instead of loading anything
+  const wo = await boot(fakeFetch, win => { fixClock(win); Object.defineProperty(win.navigator, 'onLine', { value: false, configurable: true }); });
+  wo.WorkoutApp.state.date = '2026-10-28'; wo.WorkoutApp.state.dow = 3; wo.WorkoutApp.render();
+  click(wo, cards(wo)[0].querySelector('button.watch'));
+  ok(!wo.document.querySelector('iframe'), 'offline: tapping Watch demo does not create an iframe');
+  // and the app still works if coach.js is missing/failed to load (e.g. old cache)
+  const wn2 = await boot(fakeFetch, win => { fixClock(win); win.__noCoach = true; });
+  wn2.WorkoutApp.state.date = '2026-10-28'; wn2.WorkoutApp.state.dow = 3; wn2.WorkoutApp.render();
+  ok(cards(wn2).length === cards(wc).length && !wn2.document.querySelector('details.coach') && !wn2.document.querySelector('#primer-open'), 'without coach.js the workout still renders (no cards, no primer button)');
+
+  // primer
+  ok(CD.querySelector('#primer-open'), 'Wed header has a Leg day primer button');
+  click(wc, CD.querySelector('#primer-open'));
+  ok(/Leg day primer/.test(CD.querySelector('h1').textContent) && CD.querySelectorAll('.primer-sec').length === 6, 'primer opens with 6 sections');
+  ok(CD.querySelectorAll('.primer-sec button.watch').length === 7 && [...CD.querySelectorAll('.primer-sec .ev a')].every(a => a.target === '_blank'), 'primer: demo buttons and new-tab evidence links');
+  ok(/rack|safety/i.test(CD.querySelector('.primer-sec:nth-of-type(3)') ? CD.querySelectorAll('.primer-sec')[2].textContent : ''), 'primer covers rack setup and safety pins');
+  click(wc, CD.querySelector('#primer-back'));
+  ok(!CD.querySelector('.primer-sec') && cards(wc).length === 6, 'primer Back returns to the workout');
+  MC.state.date = '2026-10-27'; MC.state.dow = 2; MC.render();
+  ok(!CD.querySelector('#primer-open'), 'primer button only on leg days (not Tuesday)');
+  const swSrc = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
+  ok(/coach\.js/.test(swSrc) && /coach\.js/.test(fs.readFileSync(path.join(root, 'index.html'), 'utf8')), 'coach.js is in index.html and the service worker shell (works offline)');
+  ok(!/<iframe/i.test(fs.readFileSync(path.join(root, 'index.html'), 'utf8')) && !/youtube/i.test(swSrc), 'no static iframe; service worker never touches YouTube');
+
   // --- static checks
   const man = JSON.parse(fs.readFileSync(path.join(root, 'manifest.webmanifest'), 'utf8'));
   ok(man.display === 'standalone' && man.icons.every(i => fs.existsSync(path.join(root, i.src))), 'manifest valid, icon files exist');
   ok(fs.existsSync(path.join(root, 'icons/apple-touch-icon.png')), 'apple-touch-icon exists');
-  for (const f of ['index.html', 'style.css', 'plan.js', 'app.js', 'sw.js']) {
+  for (const f of ['index.html', 'style.css', 'plan.js', 'coach.js', 'app.js', 'sw.js']) {
     const src = fs.readFileSync(path.join(root, f), 'utf8');
     ok(!/AKfycb|ghp_|gho_|api[_-]?key|secret/i.test(src), `${f}: no secrets`);
   }
